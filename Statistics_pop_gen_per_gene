@@ -1,0 +1,78 @@
+# This bash script is to get the population genetics statistics individually for every single gene in the genome. 
+# It utilizes bcftools to filter the main VCF file for gene coordinates
+# Then utilizes R with the packages vcfR, hierfstat and dplyr 
+# The result is a file with these columns:
+# 1- GeneID
+# 2- Scaffold
+# 3- Gene start position
+# 4- Gene end position
+# 5- Gene length
+# 6- Fst statistics
+# 7- Nucleotide diversity (Pi) statistics
+# 8- Tajima's D statistics
+#
+# Input requires 
+# Table of gene positions
+# VCF file
+
+
+cat Gene_position.txt | 
+while read line; do gene=$(echo "$line" | cut -f1); scaffold=$(echo "$line" | cut -f2); start=$(echo "$line" | cut -f3); end=$(echo "$line" | cut -f4); size=$(echo "$end-$start" |bc);
+bcftools view -r $scaffold:$start-$end file.vcf.gz > $gene.vcf;
+R < R_script_to_get_pop_get_data_from_gene_vcf_needs_batch_call.R --vanilla --args $gene $scaffold $start $end $size $gene.vcf;
+rm $gene.vcf; done
+
+
+
+# R_script_to_get_pop_get_data_from_gene_vcf_needs_batch_call.R
+library(vcfR)
+library(hierfstat)
+library(dplyr)
+
+##############
+#Handing inputs from bash 
+##############
+
+args <- commandArgs(trailingOnly = TRUE)
+
+gene_name <- args[1]
+scaffold <- args[2]
+gene_start <- args[3]
+gene_end <- args[4]
+gene_length <- args[5]
+vcf_file <- args[6]
+
+
+##############
+# Reading vcf and getting populations to turn file into hierfstats file
+##############
+
+vcf <- read.vcfR(vcf_file)
+genind <- vcfR2genind(vcf)
+
+vcfIds <- as.data.frame(rownames(genind$tab))
+colnames(vcfIds) <- "vcfID"
+
+names <- read.csv("pop_ind.csv")
+names <- distinct(names)
+names <- names %>% arrange(as.character(SampleID), 1, 1 )
+
+names <- names[names$SampleID %in% vcfIds$vcfID,]
+pops <- names$Population
+
+hfst <- genind2hierfstat(genind, pop = pops)
+
+##############
+# Calculating basic stats and putting it in an output
+##############
+
+Fst <- as.numeric(basic.stats(hfst)$overall[7])
+
+hfst_for_dos <- hfst[,-1]
+dos <- fstat2dos(hfst_for_dos, diploid = T)
+
+Pi <- pi.dosage(dos, L = as.numeric(gene_length))
+TjD <- TajimaD.dosage(dos)
+
+line <- paste(gene_name, scaffold, gene_start, gene_end, gene_length, Fst, Pi, TjD)
+write.table(line, file = "gene_pop_gen_stats.txt", append=TRUE, sep = "\t", quote = F, row.names = F, col.names = F)
